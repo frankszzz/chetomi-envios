@@ -81,10 +81,17 @@ async function saveConfig() {
 // Middleware básico
 app.use(express.json({ limit: '10mb' }));
 app.use(cors({
-  origin: ['https://files.jumpseller.com', 'https://*.jumpseller.com', 'https://envio.chetomi.cl'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  origin: [
+    'https://files.jumpseller.com',
+    'https://*.jumpseller.com',
+    /.*\.jumpseller\.com$/,
+    'https://envio.chetomi.cl',
+    'https://admin.chetomi.cl'  // ← NUEVA LÍNEA
+  ],
+  methods: ['GET', 'POST', 'PUT'],  // ← Agregar PUT
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 
 // Rate limiting
 const requestTimes = [];
@@ -529,6 +536,23 @@ app.get('/admin', (req, res) => {
 });
 
 // ENDPOINTS DEL ADMIN
+app.get('/admin/config', (req, res) => {
+  res.json(SHIPPING_CONFIG);
+});
+
+app.post('/admin/update-ranges', async (req, res) => {
+  const { serviceCode, ranges } = req.body;
+  
+  if (SHIPPING_CONFIG.services[serviceCode]) {
+    SHIPPING_CONFIG.services[serviceCode].ranges = ranges;
+    await saveConfig();
+    res.json({ success: true, message: 'Rangos actualizados correctamente' });
+  } else {
+    res.status(400).json({ error: 'Servicio no encontrado' });
+  }
+});
+
+// ENDPOINTS PARA ADMIN PANEL
 app.get('/admin/config', (req, res) => {
   res.json(SHIPPING_CONFIG);
 });
