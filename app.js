@@ -109,7 +109,7 @@ const rateLimitMiddleware = (req, res, next) => {
   next();
 };
 
-// FUNCIÓN DE DISPONIBILIDAD CON HORARIOS (NUEVA)
+// FUNCIÓN DE DISPONIBILIDAD CON HORARIOS
 function isServiceAvailable(serviceCode) {
   const service = SHIPPING_CONFIG.services[serviceCode];
   if (!service || !service.enabled) return false;
@@ -119,22 +119,19 @@ function isServiceAvailable(serviceCode) {
   
   const currentHour = chileTime.getHours();
   const currentMinute = chileTime.getMinutes();
-  const currentDay = chileTime.getDay(); // 0=domingo, 1=lunes, ..., 6=sábado
-  const currentTime = currentHour * 100 + currentMinute; // Formato HHMM
+  const currentDay = chileTime.getDay();
+  const currentTime = currentHour * 100 + currentMinute;
   
-  // Verificar día de la semana
   if (!service.available_days.includes(currentDay)) {
     console.log(`[CHETOMI] ${service.name} no disponible: día ${currentDay} no permitido`);
     return false;
   }
   
-  // Convertir horarios a formato HHMM
   const [startHour, startMin] = service.available_hours.start.split(':').map(Number);
   const [endHour, endMin] = service.available_hours.end.split(':').map(Number);
   const startTime = startHour * 100 + startMin;
   const endTime = endHour * 100 + endMin;
   
-  // Verificar horario
   if (currentTime < startTime || currentTime >= endTime) {
     console.log(`[CHETOMI] ${service.name} fuera de horario: ${currentHour}:${currentMinute.toString().padStart(2,'0')} (permitido: ${service.available_hours.start}-${service.available_hours.end})`);
     return false;
@@ -171,24 +168,73 @@ function getRangeLabel(distanceKm, serviceCode) {
   return service.ranges[service.ranges.length - 1].label;
 }
 
-// Geocodificación y cálculo de distancia
+// ========================================
+// GEOCODIFICACIÓN MEJORADA
+// ========================================
+
 const geocodeCache = new Map();
 
-async function geocodeAddress(address) {
-  const cacheKey = address.toLowerCase().trim();
+// NUEVA: Normalizar direcciones para mejorar geocodificación
+function normalizeAddress(address, commune) {
+  let normalized = address.trim();
+  
+  // Lista de calles conocidas que necesitan prefijo
+  const knownStreets = [
+    'pedro de valdivia',
+    'apoquindo',
+    'providencia',
+    'bilbao',
+    'las condes',
+    'vitacura',
+    'kennedy',
+    'andrés bello',
+    'tobalaba'
+  ];
+  
+  // Si la dirección no tiene prefijo (Av., Calle, etc.), agregar "Avenida" si es calle conocida
+  const hasPrefix = /^(av\.|avenida|calle|pasaje|paseo)/i.test(normalized);
+  
+  if (!hasPrefix) {
+    for (const street of knownStreets) {
+      if (normalized.toLowerCase().includes(street)) {
+        normalized = 'Avenida ' + normalized;
+        console.log(`[CHETOMI] 🔧 Dirección normalizada: "${address}" → "${normalized}"`);
+        break;
+      }
+    }
+  }
+  
+  return normalized;
+}
+
+// MEJORADA: Geocodificación con mejor manejo de errores
+async function geocodeAddress(address, commune = '') {
+  const normalizedAddress = normalizeAddress(address, commune);
+  const cacheKey = `${normalizedAddress}, ${commune}`.toLowerCase().trim();
   const cached = geocodeCache.get(cacheKey);
   
   if (cached && (Date.now() - cached.timestamp < 86400000)) {
+    console.log(`[CHETOMI] 💾 Cache hit: ${cacheKey}`);
     return cached.coords;
   }
 
   try {
+    // Construir query con más contexto
+    const searchQuery = commune 
+      ? `${normalizedAddress}, ${commune}, Santiago, Chile`
+      : `${normalizedAddress}, Santiago, Chile`;
+    
+    console.log(`[CHETOMI] 🔍 Geocodificando: "${searchQuery}"`);
+    
     const response = await axios.get('https://api.openrouteservice.org/geocode/search', {
       params: {
         api_key: process.env.ORS_API_KEY,
-        text: address,
+        text: searchQuery,
         'boundary.country': 'CL',
-        size: 1
+        'boundary.circle.lat': -33.4489, // Centro de Santiago
+        'boundary.circle.lon': -70.6693,
+        'boundary.circle.radius': 30, // 30 km radio
+        size: 3 // Obtener múltiples resultados para elegir el mejor
       },
       timeout: 8000
     });
@@ -197,21 +243,44 @@ async function geocodeAddress(address) {
       throw new Error('Dirección no encontrada');
     }
 
-    const coords = response.data.features[0].geometry.coordinates;
+    // Elegir el resultado más cercano al centro de Santiago
+    let bestFeature = response.data.features[0];
+    let bestDistance = Infinity;
+    
+    for (const feature of response.data.features) {
+      const lat = feature.geometry.coordinates[1];
+      const lon = feature.geometry.coordinates[0];
+      
+      // Calcular distancia al centro de Santiago
+      const distToCenter = Math.sqrt(
+        Math.pow(lat - (-33.4489), 2) + 
+        Math.pow(lon - (-70.6693), 2)
+      );
+      
+      if (distToCenter < bestDistance) {
+        bestDistance = distToCenter;
+        bestFeature = feature;
+      }
+    }
+
+    const coords = bestFeature.geometry.coordinates;
     const result = { lat: coords[1], lon: coords[0] };
+    
+    console.log(`[CHETOMI] ✅ Geocodificado: ${searchQuery} → (${result.lat}, ${result.lon})`);
     
     geocodeCache.set(cacheKey, { coords: result, timestamp: Date.now() });
     return result;
 
   } catch (error) {
+    console.error(`[CHETOMI] ❌ Error geocodificando "${address}":`, error.message);
     throw new Error(`Error geocodificando: ${error.message}`);
   }
 }
 
+// MEJORADA: Cálculo de distancia con validación
 async function calculateDistance(destinationAddress, destinationCommune) {
   try {
-    const fullDestination = `${destinationAddress}, ${destinationCommune}, Santiago, Chile`;
-    const destCoords = await geocodeAddress(fullDestination);
+    const destCoords = await geocodeAddress(destinationAddress, destinationCommune);
     
     const routeResponse = await axios.post('https://api.openrouteservice.org/v2/directions/driving-car', {
       coordinates: [
@@ -228,15 +297,30 @@ async function calculateDistance(destinationAddress, destinationCommune) {
     });
 
     const distanceKm = routeResponse.data.routes[0].segments[0].distance / 1000;
-    return Math.round(distanceKm * 100) / 100;
+    const finalDistance = Math.round(distanceKm * 100) / 100;
+    
+    // VALIDACIÓN: Si la distancia es absurda (>50km dentro de Santiago), usar fallback
+    if (finalDistance > 50) {
+      console.warn(`[CHETOMI] ⚠️ Distancia sospechosa: ${finalDistance}km. Posible error de geocodificación.`);
+      console.warn(`[CHETOMI] ⚠️ Usando distancia por defecto: 8km`);
+      return 8; // Distancia promedio razonable para Santiago
+    }
+    
+    console.log(`[CHETOMI] 📏 Distancia calculada: ${finalDistance} km`);
+    return finalDistance;
 
   } catch (error) {
-    console.error('[CHETOMI] Error calculando distancia:', error.message);
-    return 5;
+    console.error('[CHETOMI] ❌ Error calculando distancia:', error.message);
+    // Fallback: usar distancia promedio
+    console.warn('[CHETOMI] ⚠️ Usando distancia por defecto: 8km');
+    return 8;
   }
 }
 
+// ========================================
 // ENDPOINTS PRINCIPALES
+// ========================================
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -244,7 +328,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     services_enabled: Object.keys(SHIPPING_CONFIG.services).filter(
       key => SHIPPING_CONFIG.services[key].enabled
-    ).length
+    ).length,
+    version: '2.0-improved-geocoding'
   });
 });
 
@@ -284,16 +369,16 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
       });
     }
 
+    console.log(`[CHETOMI] 📦 Calculando envío para: ${destinationAddress}, ${destinationCommune}`);
+
     const distanceKm = await calculateDistance(destinationAddress, destinationCommune);
     const rates = [];
 
-    // APLICAR FILTRO DE HORARIOS (NUEVO)
     Object.keys(SHIPPING_CONFIG.services).forEach(serviceCode => {
       const service = SHIPPING_CONFIG.services[serviceCode];
       
       if (!service.enabled) return;
       
-      // VERIFICAR SI EL SERVICIO ESTÁ DISPONIBLE AHORA
       if (!isServiceAvailable(serviceCode)) {
         console.log(`[CHETOMI] ${service.name} no incluido: fuera de horario o día`);
         return;
@@ -313,6 +398,8 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
       });
     });
 
+    console.log(`[CHETOMI] ✅ ${rates.length} servicios disponibles para ${distanceKm}km`);
+
     res.json({
       reference_id,
       store: SHIPPING_CONFIG.store_info.name,
@@ -320,7 +407,7 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('[CHETOMI] Error:', error.message);
+    console.error('[CHETOMI] ❌ Error:', error.message);
     res.status(500).json({
       error: 'Error calculando envío',
       reference_id: req.body.request?.request_reference || Date.now().toString(),
@@ -329,7 +416,10 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
   }
 });
 
+// ========================================
 // ENDPOINTS PARA ADMIN PANEL
+// ========================================
+
 app.get('/admin/config', (req, res) => {
   res.json(SHIPPING_CONFIG);
 });
@@ -346,7 +436,6 @@ app.post('/admin/update-ranges', async (req, res) => {
   }
 });
 
-// NUEVOS ENDPOINTS PARA HORARIOS
 app.post('/admin/update-service-hours', async (req, res) => {
   const { serviceCode, startTime, endTime, availableDays } = req.body;
   
@@ -413,11 +502,12 @@ app.get('/admin/service-status', (req, res) => {
 // Inicialización
 loadConfig().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 CHETOMI SHIPPING CALCULATOR CON HORARIOS`);
+    console.log(`🚀 CHETOMI SHIPPING CALCULATOR v2.0 - GEOCODIFICACIÓN MEJORADA`);
     console.log(`🏪 Tienda: ${SHIPPING_CONFIG.store_info.name}`);
     console.log(`🌐 Puerto: ${PORT}`);
-    console.log(`🔧 Panel Admin: https://envio.chetomi.cl/admin`);
+    console.log(`🔧 Panel Admin: https://admin.chetomi.cl`);
     console.log(`⏰ Zona horaria: America/Santiago`);
+    console.log(`🔍 Mejoras: Normalización de direcciones + Validación de distancias`);
     console.log(`📋 Servicios configurados:`);
     Object.keys(SHIPPING_CONFIG.services).forEach(serviceCode => {
       const service = SHIPPING_CONFIG.services[serviceCode];
