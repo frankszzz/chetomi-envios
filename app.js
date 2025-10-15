@@ -174,11 +174,9 @@ function getRangeLabel(distanceKm, serviceCode) {
 
 const geocodeCache = new Map();
 
-// NUEVA: Normalizar direcciones para mejorar geocodificación
 function normalizeAddress(address, commune) {
   let normalized = address.trim();
   
-  // Lista de calles conocidas que necesitan prefijo
   const knownStreets = [
     'pedro de valdivia',
     'apoquindo',
@@ -191,7 +189,6 @@ function normalizeAddress(address, commune) {
     'tobalaba'
   ];
   
-  // Si la dirección no tiene prefijo (Av., Calle, etc.), agregar "Avenida" si es calle conocida
   const hasPrefix = /^(av\.|avenida|calle|pasaje|paseo)/i.test(normalized);
   
   if (!hasPrefix) {
@@ -207,7 +204,6 @@ function normalizeAddress(address, commune) {
   return normalized;
 }
 
-// MEJORADA: Geocodificación con mejor manejo de errores
 async function geocodeAddress(address, commune = '') {
   const normalizedAddress = normalizeAddress(address, commune);
   const cacheKey = `${normalizedAddress}, ${commune}`.toLowerCase().trim();
@@ -219,7 +215,6 @@ async function geocodeAddress(address, commune = '') {
   }
 
   try {
-    // Construir query con más contexto
     const searchQuery = commune 
       ? `${normalizedAddress}, ${commune}, Santiago, Chile`
       : `${normalizedAddress}, Santiago, Chile`;
@@ -231,10 +226,10 @@ async function geocodeAddress(address, commune = '') {
         api_key: process.env.ORS_API_KEY,
         text: searchQuery,
         'boundary.country': 'CL',
-        'boundary.circle.lat': -33.4489, // Centro de Santiago
+        'boundary.circle.lat': -33.4489,
         'boundary.circle.lon': -70.6693,
-        'boundary.circle.radius': 30, // 30 km radio
-        size: 3 // Obtener múltiples resultados para elegir el mejor
+        'boundary.circle.radius': 30,
+        size: 3
       },
       timeout: 8000
     });
@@ -243,7 +238,6 @@ async function geocodeAddress(address, commune = '') {
       throw new Error('Dirección no encontrada');
     }
 
-    // Elegir el resultado más cercano al centro de Santiago
     let bestFeature = response.data.features[0];
     let bestDistance = Infinity;
     
@@ -251,7 +245,6 @@ async function geocodeAddress(address, commune = '') {
       const lat = feature.geometry.coordinates[1];
       const lon = feature.geometry.coordinates[0];
       
-      // Calcular distancia al centro de Santiago
       const distToCenter = Math.sqrt(
         Math.pow(lat - (-33.4489), 2) + 
         Math.pow(lon - (-70.6693), 2)
@@ -277,7 +270,6 @@ async function geocodeAddress(address, commune = '') {
   }
 }
 
-// MEJORADA: Cálculo de distancia con validación
 async function calculateDistance(destinationAddress, destinationCommune) {
   try {
     const destCoords = await geocodeAddress(destinationAddress, destinationCommune);
@@ -299,11 +291,9 @@ async function calculateDistance(destinationAddress, destinationCommune) {
     const distanceKm = routeResponse.data.routes[0].segments[0].distance / 1000;
     const finalDistance = Math.round(distanceKm * 100) / 100;
     
-    // VALIDACIÓN: Si la distancia es absurda (>50km dentro de Santiago), usar fallback
     if (finalDistance > 50) {
-      console.warn(`[CHETOMI] ⚠️ Distancia sospechosa: ${finalDistance}km. Posible error de geocodificación.`);
-      console.warn(`[CHETOMI] ⚠️ Usando distancia por defecto: 8km`);
-      return 8; // Distancia promedio razonable para Santiago
+      console.warn(`[CHETOMI] ⚠️ Distancia sospechosa: ${finalDistance}km. Usando distancia por defecto: 8km`);
+      return 8;
     }
     
     console.log(`[CHETOMI] 📏 Distancia calculada: ${finalDistance} km`);
@@ -311,7 +301,6 @@ async function calculateDistance(destinationAddress, destinationCommune) {
 
   } catch (error) {
     console.error('[CHETOMI] ❌ Error calculando distancia:', error.message);
-    // Fallback: usar distancia promedio
     console.warn('[CHETOMI] ⚠️ Usando distancia por defecto: 8km');
     return 8;
   }
@@ -329,17 +318,27 @@ app.get('/health', (req, res) => {
     services_enabled: Object.keys(SHIPPING_CONFIG.services).filter(
       key => SHIPPING_CONFIG.services[key].enabled
     ).length,
-    version: '2.0-improved-geocoding'
+    version: '3.0-two-methods-support'
   });
 });
 
 app.get('/services', (req, res) => {
-  const availableServices = Object.keys(SHIPPING_CONFIG.services)
-    .filter(key => SHIPPING_CONFIG.services[key].enabled)
+  // NUEVO: Soporta filtro por servicio
+  const serviceFilter = req.query.service;
+  
+  let servicesToReturn = SHIPPING_CONFIG.services;
+  
+  // Si se especifica un servicio, filtrar
+  if (serviceFilter && SHIPPING_CONFIG.services[serviceFilter]) {
+    servicesToReturn = { [serviceFilter]: SHIPPING_CONFIG.services[serviceFilter] };
+  }
+  
+  const availableServices = Object.keys(servicesToReturn)
+    .filter(key => servicesToReturn[key].enabled)
     .map(key => ({
-      service_name: SHIPPING_CONFIG.services[key].name,
+      service_name: servicesToReturn[key].name,
       service_code: key,
-      description: SHIPPING_CONFIG.services[key].description
+      description: servicesToReturn[key].description
     }));
 
   res.json({
@@ -353,6 +352,9 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
   try {
     const { request } = req.body;
     const reference_id = request?.request_reference || `CHETOMI_${Date.now()}`;
+    
+    // NUEVO: Obtener filtro de servicio desde query param
+    const serviceFilter = req.query.service;
     
     if (!request?.to) {
       return res.status(400).json({ error: 'Datos de destino requeridos', reference_id });
@@ -370,11 +372,19 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
     }
 
     console.log(`[CHETOMI] 📦 Calculando envío para: ${destinationAddress}, ${destinationCommune}`);
+    if (serviceFilter) {
+      console.log(`[CHETOMI] 🎯 Filtro de servicio: ${serviceFilter}`);
+    }
 
     const distanceKm = await calculateDistance(destinationAddress, destinationCommune);
     const rates = [];
 
-    Object.keys(SHIPPING_CONFIG.services).forEach(serviceCode => {
+    // NUEVO: Iterar solo sobre servicios filtrados
+    const servicesToProcess = serviceFilter && SHIPPING_CONFIG.services[serviceFilter]
+      ? [serviceFilter]
+      : Object.keys(SHIPPING_CONFIG.services);
+
+    servicesToProcess.forEach(serviceCode => {
       const service = SHIPPING_CONFIG.services[serviceCode];
       
       if (!service.enabled) return;
@@ -398,7 +408,7 @@ app.post('/calculate-shipping', rateLimitMiddleware, async (req, res) => {
       });
     });
 
-    console.log(`[CHETOMI] ✅ ${rates.length} servicios disponibles para ${distanceKm}km`);
+    console.log(`[CHETOMI] ✅ ${rates.length} servicio(s) disponible(s) para ${distanceKm}km`);
 
     res.json({
       reference_id,
@@ -502,17 +512,21 @@ app.get('/admin/service-status', (req, res) => {
 // Inicialización
 loadConfig().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 CHETOMI SHIPPING CALCULATOR v2.0 - GEOCODIFICACIÓN MEJORADA`);
+    console.log(`🚀 CHETOMI SHIPPING CALCULATOR v3.0 - TWO METHODS SUPPORT`);
     console.log(`🏪 Tienda: ${SHIPPING_CONFIG.store_info.name}`);
     console.log(`🌐 Puerto: ${PORT}`);
     console.log(`🔧 Panel Admin: https://admin.chetomi.cl`);
     console.log(`⏰ Zona horaria: America/Santiago`);
-    console.log(`🔍 Mejoras: Normalización de direcciones + Validación de distancias`);
+    console.log(`🔍 Mejoras: Soporte para métodos separados + Geocodificación mejorada`);
     console.log(`📋 Servicios configurados:`);
     Object.keys(SHIPPING_CONFIG.services).forEach(serviceCode => {
       const service = SHIPPING_CONFIG.services[serviceCode];
       console.log(`   ${service.name}: ${service.available_hours.start}-${service.available_hours.end} (${service.enabled ? 'ON' : 'OFF'})`);
     });
+    console.log(`\n📖 MODOS DE USO:`);
+    console.log(`   • Ambos servicios: POST /calculate-shipping`);
+    console.log(`   • Solo Envío Hoy: POST /calculate-shipping?service=TODAY`);
+    console.log(`   • Solo Envío Programado: POST /calculate-shipping?service=SCHEDULED`);
     console.log(`====================================`);
   });
 });
