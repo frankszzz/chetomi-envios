@@ -9,4 +9,4 @@ COPY . .
 
 ENV FLASK_APP=run.py
 
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "run:app"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5010", "run:app"]
