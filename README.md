@@ -1,26 +1,26 @@
-# Chetomi - Calculadora de Envíos
 
-Sistema de cálculo de envíos para la tienda Chetomi utilizando OpenRouteService API.
+# Envío Chetomi
 
-## Características
+Sistema Flask + PostgreSQL para calcular tarifas de envíos integrados con JumpSeller, panel de administración y cálculo de distancias usando OpenRouteService.
 
-- ✅ Cálculo de distancia real desde Providencia
-- ✅ Tarifas por zonas y comunas especiales
-- ✅ Rate limiting para optimizar API gratuita
-- ✅ Cache de geocodificación
-- ✅ Precios especiales por localidad
+## Instalación (Desarrollo y Producción vía Docker)
 
-## Endpoints
+1. Copia `.env.example` como `.env` y ajusta los valores.
+2. Ejecuta:
+docker-compose up --build
 
-- `GET /health` - Estado del servicio
-- `GET /services` - Servicios disponibles  
-- `POST /calculate-shipping` - Calcular envío
-- `POST /test-chetomi` - Endpoint de prueba
+text
+3. Accede a la app en `http://localhost:5000` por defecto.
+4. El primer usuario admin (`franksmazagmail.com / chetomi123`) se crea automáticamente al levantar por primera vez.
 
-## Configuración
+## Estructura
 
-Desde Amapolas 3959, Providencia, Santiago, Chile
+- `app/` código fuente Flask
+- `migrations/` para gestión de la base (flask db)
+- `tests/` pruebas básicas
+- `Dockerfile`, `docker-compose.yml` despliegue rápido y portable
 
-## Contacto
+## Notas
 
-Email: franksmaza@gmail.com
+- Panel admin y endpoints `/calculate-shipping` y `/services` para JumpSeller.
+- Lógica de cálculo vía OpenRouteService API.
