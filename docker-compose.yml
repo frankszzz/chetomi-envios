@@ -4,7 +4,7 @@ services:
   web:
     build: .
     ports:
-      - "5010:5010"  # Puerto expuesto:host, coincidiendo con Gunicorn o Flask debug mode
+      - "5020:5020"  # Puerto expuesto:host, coincidiendo con Gunicorn o Flask debug mode
     environment:
       - FLASK_APP=run.py
       - FLASK_DEBUG=1               # Modo debug para desarrollo
