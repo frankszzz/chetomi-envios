@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+
+{% block title %}Panel Admin{% endblock %}
+
+{% block content %}
+<h2>Panel de Administración</h2>
+<p>Bienvenido, {{ user.email }}</p>
+
+<a href="{{ url_for('main.logout') }}" class="btn btn-secondary mb-3">Cerrar Sesión</a>
+
+<h3>Usuarios</h3>
+<table class="table">
+    <thead><tr><th>ID</th><th>Email</th><th>Admin</th></tr></thead>
+    <tbody>
+        {% for u in usuarios %}
+        <tr>
+            <td>{{ u.id }}</td>
+            <td>{{ u.email }}</td>
+            <td>{{ 'Sí' if u.admin else 'No' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h3> Tarifas </h3>
+<table class="table">
+    <thead><tr><th>ID</th><th>Desde (km)</th><th>Hasta (km)</th><th>Precio (CLP)</th></tr></thead>
+    <tbody>
+        {% for t in tarifas %}
+        <tr>
+            <td>{{ t.id }}</td>
+            <td>{{ t.desde_km }}</td>
+            <td>{{ t.hasta_km }}</td>
+            <td>{{ t.precio }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}
